@@ -1422,7 +1422,7 @@ TABLES = {
         "ddl": """CREATE TABLE LIGHTRAG_LLM_CACHE (
 	                workspace varchar(255) NOT NULL,
 	                id varchar(255) NOT NULL,
-	                mode varchar(255) NOT NULL,
+	                mode varchar(32) NOT NULL,
                     original_prompt TEXT,
                     return_value TEXT,
                     create_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP,

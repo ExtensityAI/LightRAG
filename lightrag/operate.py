@@ -1503,11 +1503,20 @@ async def naive_query(
 ):
     query_result = {}
 
+    # Handle cache
+    use_model_func = global_config["llm_model_func"]
+    args_hash = compute_args_hash(query_param.mode, query, cache_type="query")
+    cached_response, quantized, min_val, max_val = await handle_cache(
+        hashing_kv, args_hash, query, query_param.mode, cache_type="query"
+    )
+    if cached_response is not None:
+        return cached_response
+
     # If doc_names filter is specified, get only chunks from those docs
     if hasattr(query_param, 'doc_names') and query_param.doc_names:
         # Get doc IDs for the specified doc names
         sql = """
-            SELECT id FROM LIGHTRAG_DOC_FULL
+            SELECT id FROM LIGHTRAG_DOC_FULL 
             WHERE workspace=$1 AND doc_name = ANY($2::varchar[])
         """
         doc_results = await chunks_vdb.db.query(
@@ -1517,12 +1526,12 @@ async def naive_query(
         )
         if not doc_results:
             return PROMPTS["fail_response"]
-
+        
         doc_ids = [doc["id"] for doc in doc_results]
-
+        
         # Modify vector search to only consider chunks from filtered docs
         results = await chunks_vdb.query(
-            query,
+            query, 
             top_k=query_param.top_k,
             filter_func=lambda x: x["full_doc_id"] in doc_ids
         )
@@ -1594,26 +1603,9 @@ async def naive_query(
             return query_result
         return sys_prompt
 
-    # Create cache prefix
-    workspace = hashing_kv.db.workspace if hasattr(hashing_kv, 'db') else "default"
-    doc_names_prefix = "|".join([c.get("doc_name", "unknown") for c in maybe_trun_chunks])
-    tags_prefix = "|".join(query_param.tags) if hasattr(query_param, 'tags') and query_param.tags else ""
-    cache_prompt = f"{doc_names_prefix}::{tags_prefix}::{workspace}::{query}"
-
-    query_param_str = query_param.mode + "::" + str(query_param.top_k) + "::" + str(query_param.response_type)
-
-    # Handle cache
-    use_model_func = global_config["llm_model_func"]
-    args_hash = compute_args_hash(query_param_str, cache_prompt, cache_type="query")
-    cached_response, quantized, min_val, max_val = await handle_cache(
-        hashing_kv, args_hash, cache_prompt, query_param_str, cache_type="query"
-    )
-    if cached_response is not None:
-        return cached_response
-
     response = await use_model_func(
-    query,
-    system_prompt=sys_prompt,
+        query,
+        system_prompt=sys_prompt,
     )
 
     if len(response) > len(sys_prompt):
@@ -1628,6 +1620,11 @@ async def naive_query(
             .strip()
         )
 
+    # Create cache prefix
+    workspace = hashing_kv.db.workspace if hasattr(hashing_kv, 'db') else "default"
+    doc_names_prefix = "|".join([c.get("doc_name", "unknown") for c in maybe_trun_chunks])
+    cache_prompt = f"{doc_names_prefix}::{workspace}::{query}"
+
     # Save to cache
     await save_to_cache(
         hashing_kv,
@@ -1638,7 +1635,7 @@ async def naive_query(
             quantized=quantized,
             min_val=min_val,
             max_val=max_val,
-            mode=query_param_str,
+            mode=query_param.mode,
             cache_type="query",
         ),
     )
