@@ -361,55 +361,17 @@ class PGKVStorage(BaseKVStorage):
             pass
         elif self.namespace == "full_docs":
             for k, v in data.items():
-                try:
-                    _data = {
-                        "id": k,
-                        "content": v["content"],
-                        "workspace": self.db.workspace,
-                    }
-                    if "doc_name" in v:
-                        # First try to update existing record by doc_name
-                        update_sql = """
-                            UPDATE LIGHTRAG_DOC_FULL
-                            SET content = $1,
-                                id = $2,
-                                update_time = CURRENT_TIMESTAMP
-                            WHERE workspace = $3 AND doc_name = $4
-                            RETURNING id
-                        """
-                        result = await self.db.query(
-                            update_sql,
-                            {
-                                "content": v["content"],
-                                "id": k,
-                                "workspace": self.db.workspace,
-                                "doc_name": v["doc_name"]
-                            }
-                        )
-
-                        # If no existing record found, insert new one
-                        if not result:
-                            insert_sql = """
-                                INSERT INTO LIGHTRAG_DOC_FULL (id, content, workspace, doc_name)
-                                VALUES ($1, $2, $3, $4)
-                            """
-                            await self.db.execute(
-                                insert_sql,
-                                {
-                                    "id": k,
-                                    "content": v["content"],
-                                    "workspace": self.db.workspace,
-                                    "doc_name": v["doc_name"]
-                                }
-                            )
-                    else:
-                        # Original logic for docs without doc_name
-                        upsert_sql = SQL_TEMPLATES["upsert_doc_full"]
-                        await self.db.execute(upsert_sql, _data)
-
-                except Exception as e:
-                    logger.error(f"Error upserting document: {str(e)}")
-                    raise
+                _data = {
+                    "id": k,
+                    "content": v["content"],
+                    "workspace": self.db.workspace,
+                }
+                if "doc_name" in v:
+                    upsert_sql = SQL_TEMPLATES["upsert_doc_full_with_doc_name"]
+                    _data["doc_name"] = v["doc_name"]
+                else:
+                    upsert_sql = SQL_TEMPLATES["upsert_doc_full"]
+                await self.db.execute(upsert_sql, _data)
         elif self.namespace == "llm_response_cache":
             for mode, items in data.items():
                 for k, v in items.items():
@@ -1375,8 +1337,7 @@ TABLES = {
                     meta JSONB,
                     create_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     update_time TIMESTAMP,
-	                CONSTRAINT LIGHTRAG_DOC_FULL_PK PRIMARY KEY (workspace, id),
-                    CONSTRAINT LIGHTRAG_DOC_FULL_NAME_UQ UNIQUE (workspace, doc_name)
+	                CONSTRAINT LIGHTRAG_DOC_FULL_PK PRIMARY KEY (workspace, id)
                     )"""
     },
     "LIGHTRAG_DOC_CHUNKS": {
@@ -1501,10 +1462,8 @@ SQL_TEMPLATES = {
                        """,
     "upsert_doc_full_with_doc_name": """INSERT INTO LIGHTRAG_DOC_FULL (id, content, workspace, doc_name)
                         VALUES ($1, $2, $3, $4)
-                        ON CONFLICT (workspace, doc_name) DO UPDATE
-                           SET content = EXCLUDED.content,
-                               id = EXCLUDED.id,
-                               update_time = CURRENT_TIMESTAMP
+                        ON CONFLICT (workspace,id) DO UPDATE
+                           SET content = $2, doc_name=$4, update_time = CURRENT_TIMESTAMP
                        """,
     "upsert_llm_response_cache": """INSERT INTO LIGHTRAG_LLM_CACHE(workspace,id,original_prompt,return_value,mode)
                                       VALUES ($1, $2, $3, $4, $5)
