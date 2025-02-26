@@ -634,72 +634,61 @@ class LightRAG:
                 if any(results):
                     await self._insert_done()
 
-    def insert_custom_chunks(self, full_text: str, text_chunks: list[str]):
+    def insert_custom_chunks(self, full_text: str, text_chunks: list[str], doc_name=None, workspace=None):
         loop = always_get_an_event_loop()
         return loop.run_until_complete(
-            self.ainsert_custom_chunks(full_text, text_chunks)
+            self.ainsert_custom_chunks(full_text, text_chunks, doc_name=doc_name, workspace=workspace)
         )
 
-    async def ainsert_custom_chunks(self, full_text: str, text_chunks: list[str]):
-        update_storage = False
-        try:
-            doc_key = compute_mdhash_id(full_text.strip(), prefix="doc-")
-            new_docs = {doc_key: {"content": full_text.strip()}}
+    async def ainsert_custom_chunks(self, full_text: str, text_chunks: list[str], doc_name=None, workspace=None):
+        workspace_mgr = WorkspaceManager(self._storage_instances, workspace)
 
-            _add_doc_keys = await self.full_docs.filter_keys([doc_key])
-            new_docs = {k: v for k, v in new_docs.items() if k in _add_doc_keys}
-            if not len(new_docs):
-                logger.warning("This document is already in the storage.")
-                return
+        async with workspace_mgr.temporary_workspace():
+            update_storage = False
+            try:
+                doc_key = compute_mdhash_id(full_text.strip(), prefix="doc-")
+                new_docs = {doc_key: {"content": full_text.strip(), "doc_name": doc_name}}
 
-            update_storage = True
-            logger.info(f"[New Docs] inserting {len(new_docs)} docs")
+                _add_doc_keys = await self.full_docs.filter_keys([doc_key])
+                new_docs = {k: v for k, v in new_docs.items() if k in _add_doc_keys}
+                if not len(new_docs):
+                    logger.warning("This document is already in the storage.")
+                    return
 
-            inserting_chunks = {}
-            for chunk_text in text_chunks:
-                chunk_text_stripped = chunk_text.strip()
-                chunk_key = compute_mdhash_id(chunk_text_stripped, prefix="chunk-")
+                update_storage = True
+                logger.info(f"[New Docs] inserting {len(new_docs)} docs")
 
-                inserting_chunks[chunk_key] = {
-                    "content": chunk_text_stripped,
-                    "full_doc_id": doc_key,
+                inserting_chunks = {}
+                for chunk in text_chunks:
+                    chunk_text_stripped = chunk["content"].strip()
+                    chunk_key = compute_mdhash_id(chunk_text_stripped, prefix="chunk-")
+
+                    inserting_chunks[chunk_key] = {
+                        "content": chunk_text_stripped,
+                        "full_doc_id": doc_key,
+                        "chunk_order_index": chunk["chunk_order_index"],
+                        "tokens": chunk["tokens"]
+                    }
+
+                _add_chunk_keys = await self.text_chunks.filter_keys(
+                    list(inserting_chunks.keys())
+                )
+                inserting_chunks = {
+                    k: v for k, v in inserting_chunks.items() if k in _add_chunk_keys
                 }
+                if not len(inserting_chunks):
+                    logger.warning("All chunks are already in the storage.")
+                    return
 
-            _add_chunk_keys = await self.text_chunks.filter_keys(
-                list(inserting_chunks.keys())
-            )
-            inserting_chunks = {
-                k: v for k, v in inserting_chunks.items() if k in _add_chunk_keys
-            }
-            if not len(inserting_chunks):
-                logger.warning("All chunks are already in the storage.")
-                return
+                logger.info(f"[New Chunks] inserting {len(inserting_chunks)} chunks")
 
-            logger.info(f"[New Chunks] inserting {len(inserting_chunks)} chunks")
+                await self.chunks_vdb.upsert(inserting_chunks)
+                await self.full_docs.upsert(new_docs)
+                await self.text_chunks.upsert(inserting_chunks)
 
-            await self.chunks_vdb.upsert(inserting_chunks)
-
-            logger.info("[Entity Extraction]...")
-            maybe_new_kg = await extract_entities(
-                inserting_chunks,
-                knowledge_graph_inst=self.chunk_entity_relation_graph,
-                entity_vdb=self.entities_vdb,
-                relationships_vdb=self.relationships_vdb,
-                global_config=asdict(self),
-            )
-
-            if maybe_new_kg is None:
-                logger.warning("No new entities and relationships found")
-                return
-            else:
-                self.chunk_entity_relation_graph = maybe_new_kg
-
-            await self.full_docs.upsert(new_docs)
-            await self.text_chunks.upsert(inserting_chunks)
-
-        finally:
-            if update_storage:
-                await self._insert_done()
+            finally:
+                if update_storage:
+                    await self._insert_done()
 
     async def apipeline_process_documents(self, string_or_strings):
         """Input list remove duplicates, generate document IDs and initial pendding status, filter out already stored documents, store docs
@@ -1133,7 +1122,7 @@ class LightRAG:
                 )
             else:
                 raise ValueError(f"Unknown mode {param.mode}")
-            
+
             await self._query_done()
             return response
 
@@ -1631,12 +1620,12 @@ class LightRAG:
     async def get_chunks_by_doc_ids(self, doc_ids: List[str]) -> Dict[str, Any]:
         """Get all chunks belonging to specific document IDs"""
         sql = """
-            SELECT id, content 
-            FROM LIGHTRAG_DOC_CHUNKS 
+            SELECT id, content
+            FROM LIGHTRAG_DOC_CHUNKS
             WHERE workspace=$1 AND full_doc_id = ANY($2::varchar[])
         """
         chunks = await self.chunks_vdb.db.query(
-            sql, 
+            sql,
             {"workspace": self.chunks_vdb.db.workspace, "doc_ids": doc_ids},
             multirows=True
         )
