@@ -359,6 +359,14 @@ def process_combine_contexts(hl, ll):
     return combined_sources_result
 
 
+def parse_prompt_parts(prompt: str) -> tuple[str, str, str, str]:
+    """Parse a prompt of format {doc_names_prefix}::{tags_prefix}::{workspace}::{query}"""
+    parts = prompt.split("::")
+    if len(parts) != 4:
+        return "", "", "", prompt  # Return full prompt as query if format doesn't match
+    return parts[0], parts[1], parts[2], parts[3]
+
+
 async def get_best_cached_response(
     hashing_kv,
     current_prompt,
@@ -371,13 +379,14 @@ async def get_best_cached_response(
     logger.debug(
         f"Starting cache lookup with mode={mode}, similarity_threshold={similarity_threshold}"
     )
-    
+
     # Extract query part if the input is a string
-    if isinstance(current_prompt, str):
-        _, _, current_prompt = parse_prompt_parts(current_prompt)
-    
-    logger.debug(f"Current prompt (query part): {current_prompt[:100]}...")
-    
+    current_doc_names, current_tags, current_workspace, current_prompt = parse_prompt_parts(original_prompt)
+    logger.debug(f"Doc names: {current_doc_names}, Tags: {current_tags}, Workspace: {current_workspace}")
+
+    # logger.debug(f"Current prompt (query part): {current_prompt[:100]}...")
+    logger.debug("Embedding...")
+
     mode_cache = await hashing_kv.get_by_id(mode)
     if not mode_cache:
         logger.debug(f"No cache found for mode: {mode}")
@@ -397,7 +406,28 @@ async def get_best_cached_response(
             continue
 
         # Extract query part from cached prompt
-        _, _, cached_query = parse_prompt_parts(cached_prompt)
+        cached_doc_names, cached_tags, cached_workspace, cached_query = parse_prompt_parts(cached_prompt)
+        logger.debug(
+            f"Comparing current vs cached:"
+            f"\nDoc names: '{current_doc_names}' vs '{cached_doc_names}'"
+            f"\nTags: '{current_tags}' vs '{cached_tags}'"
+            f"\nWorkspace: '{current_workspace}' vs '{cached_workspace}'"
+        )
+
+        # Skip if doc names, tags, or workspace don't match
+        if (cached_doc_names != current_doc_names or
+            cached_tags != current_tags or
+            cached_workspace != current_workspace):
+            logger.debug(
+                f"Skipping cache_id {cache_id}: Document/tags/workspace mismatch"
+                f"\nCurrent doc_names: '{current_doc_names}'"
+                f"\nCached doc_names: '{cached_doc_names}'"
+                f"\nCurrent tags: '{current_tags}'"
+                f"\nCached tags: '{cached_tags}'"
+                f"\nCurrent workspace: '{current_workspace}'"
+                f"\nCached workspace: '{cached_workspace}'"
+            )
+            continue
 
         # Calculate similarity based on input type
         if isinstance(current_prompt, np.ndarray):
@@ -414,7 +444,7 @@ async def get_best_cached_response(
             distance = Levenshtein.distance(str(current_prompt).lower(), str(cached_query).lower())
             max_len = max(len(str(current_prompt)), len(str(cached_query)))
             similarity = 1 - (distance / max_len)  # Normalize to 0-1 range
-        
+
         logger.debug(
             f"Cache entry {cache_id[:8]}: similarity={similarity:.4f}\n"
             f"Cached query: {cached_query[:100]}..."
@@ -517,14 +547,6 @@ def dequantize_embedding(
     return (quantized * scale + min_val).astype(np.float32)
 
 
-def parse_prompt_parts(prompt: str) -> tuple[str, str, str]:
-    """Parse a prompt of format {doc_names_prefix}::{workspace}::{query}"""
-    parts = prompt.split("::")
-    if len(parts) != 3:
-        return "", "", prompt  # Return full prompt as query if format doesn't match
-    return parts[0], parts[1], parts[2]
-
-
 async def handle_cache(
     hashing_kv,
     args_hash,
@@ -551,12 +573,12 @@ async def handle_cache(
         quantized = min_val = max_val = None
         if is_embedding_cache_enabled:
             # Extract only the query part for embedding
-            _, _, query = parse_prompt_parts(prompt)
+            _, _, _, query = parse_prompt_parts(prompt)
             # Use embedding cache
             current_embedding = await hashing_kv.embedding_func([query])
             llm_model_func = hashing_kv.global_config.get("llm_model_func")
             quantized, min_val, max_val = quantize_embedding(current_embedding[0])
-            
+
             # Pass the embedding of just the query part
             best_cached_response = await get_best_cached_response(
                 hashing_kv,
@@ -565,7 +587,7 @@ async def handle_cache(
                 mode=mode,
                 use_llm_check=use_llm_check,
                 llm_func=llm_model_func if use_llm_check else None,
-                original_prompt=query,  # Pass only query part for similarity check
+                original_prompt=prompt,
             )
             if best_cached_response is not None:
                 return best_cached_response, None, None, None
