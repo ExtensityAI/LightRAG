@@ -646,13 +646,15 @@ class LightRAG:
         async with workspace_mgr.temporary_workspace():
             update_storage = False
             try:
-                doc_key = compute_mdhash_id(full_text.strip(), prefix="doc-")
+                # Include doc_name in ID generation if provided
+                id_content = f"{full_text.strip()}_{doc_name}" if doc_name else full_text.strip()
+                doc_key = compute_mdhash_id(id_content, prefix="doc-")
                 new_docs = {doc_key: {"content": full_text.strip(), "doc_name": doc_name}}
 
                 _add_doc_keys = await self.full_docs.filter_keys([doc_key])
                 new_docs = {k: v for k, v in new_docs.items() if k in _add_doc_keys}
                 if not len(new_docs):
-                    logger.warning("This document is already in the storage.")
+                    logger.warning("This document with the same content and name is already in the storage.")
                     return
 
                 update_storage = True
@@ -674,7 +676,9 @@ class LightRAG:
                 inserting_chunks = {}
                 for chunk in text_chunks:
                     chunk_text_stripped = chunk["content"].strip()
-                    chunk_key = compute_mdhash_id(chunk_text_stripped, prefix="chunk-")
+                    # Include doc_key in the chunk ID generation
+                    chunk_id_content = f"{chunk_text_stripped}_{doc_key}"
+                    chunk_key = compute_mdhash_id(chunk_id_content, prefix="chunk-")
 
                     inserting_chunks[chunk_key] = {
                         "content": chunk_text_stripped,
