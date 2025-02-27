@@ -658,6 +658,19 @@ class LightRAG:
                 update_storage = True
                 logger.info(f"[New Docs] inserting {len(new_docs)} docs")
 
+                # Add doc status entry
+                doc_status = {
+                    doc_key: {
+                        "content_summary": self._get_content_summary(full_text.strip()),
+                        "content_length": len(full_text.strip()),
+                        "status": DocStatus.PROCESSED,  # Since we're inserting pre-chunked content
+                        "created_at": datetime.now().isoformat(),
+                        "updated_at": datetime.now().isoformat(),
+                        "chunks_count": len(text_chunks)
+                    }
+                }
+                await self.doc_status.upsert(doc_status)
+
                 inserting_chunks = {}
                 for chunk in text_chunks:
                     chunk_text_stripped = chunk["content"].strip()
